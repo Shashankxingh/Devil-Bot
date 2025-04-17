@@ -5,21 +5,21 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-# Set a working directory inside the container
+# Create working directory
 WORKDIR /app
 
-# Install system dependencies (like MongoDB client dependencies)
-RUN apt-get update && apt-get install -y libmongoc-1.0-0 && rm -rf /var/lib/apt/lists/*
-
-# Install pipenv (if you use pipenv) or use pip directly
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the project files into the container
+# Copy project files
 COPY . .
 
-# Expose a dummy port to satisfy Render's requirement for an open port (if needed)
+# Install tini to handle multiple processes
+RUN apt-get update && apt-get install -y tini
+
+# Expose a dummy port to satisfy Render's requirement for an open port
 EXPOSE 10000
 
-# Run the application
-CMD ["python", "userbot.py"]
+# Start both the dummy HTTP server and the bot (Userbot)
+CMD ["tini", "--", "sh", "-c", "python3 -m http.server 10000 & python3 userbot.py"]
