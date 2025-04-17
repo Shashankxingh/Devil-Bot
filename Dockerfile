@@ -21,5 +21,5 @@ RUN apt-get update && apt-get install -y tini
 # Expose a dummy port to satisfy Render's requirement for an open port
 EXPOSE 10000
 
-# Start both the dummy HTTP server and your userbot
+# Start the bot
 CMD ["tini", "--", "sh", "-c", "python3 -m http.server 10000 & python3 userbot.py"]
