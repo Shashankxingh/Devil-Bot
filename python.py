@@ -1,133 +1,120 @@
-import random
 import os
 from dotenv import load_dotenv
-from telegram import Update, ChatMemberOwner, ChatMemberAdministrator
-from telegram.ext import Application, CommandHandler, CallbackContext
+from telethon import TelegramClient, events
+from pymongo import MongoClient
 
+# Load environment variables from .env file
 load_dotenv()
 
-# 🚨 Keep this token secret! If leaked, regenerate via @BotFather 🚨
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is missing from .env file!")
+# MongoDB connection setup
+MONGO_URI = os.getenv('MONGO_URI')
+client = MongoClient(MONGO_URI)
+db = client['telegram_userbot']
+users_collection = db['users']
 
-# 🔥 Overlord’s Responses 🔥
+# Telegram credentials from .env file
+api_id = int(os.getenv('API_ID'))  # Replace with your API ID from Telegram Developer Portal
+api_hash = os.getenv('API_HASH')  # Replace with your API Hash from Telegram Developer Portal
 
-PROMOTE_MESSAGES = [
-    "You have been granted a mere fraction of my power. Serve well, or vanish.",
-    "Consider yourself fortunate. Authority is a gift, but it can be taken.",
-    "Even the weak may rise… but do not mistake this for mercy.",
-    "This power is temporary. Fail, and you will be erased."
-]
+# Initialize the Telegram client (Userbot)
+telegram_client = TelegramClient('userbot', api_id, api_hash)
 
-DEMOTE_MESSAGES = [
-    "You have failed. Your title is stripped, and your worth is gone.",
-    "I have no use for the weak. Step aside.",
-    "Disappointing. You were given a chance, and yet, you fell.",
-    "Power is not for everyone. You are proof of that."
-]
+# Helper function to send warnings
+async def send_warning(event, sender, remaining_warnings):
+    await event.reply(f"Warning {5 - remaining_warnings}/5: You have {remaining_warnings} warnings left.")
+    users_collection.update_one({"_id": sender}, {"$set": {"warnings": remaining_warnings}})
 
-DENIED_MESSAGES = [
-    "You… a mere insect… believe you can command me? How amusing.",
-    "You hold no authority here. Do not speak of things beyond your reach.",
-    "Pathetic. You lack power, yet you dare to order me?",
-    "You are unworthy. Do not waste my time with your foolishness."
-]
+# Function to handle new messages
+@telegram_client.on(events.NewMessage(incoming=True))
+async def handler(event):
+    sender = event.sender_id
+    user = users_collection.find_one({"_id": sender})
 
-MISSING_REPLY_MESSAGES = [
-    "Did your tiny mind forget to mention who should receive this power?",
-    "I cannot promote a ghost. Speak properly, or not at all.",
-    "Fool. If you cannot name a subordinate, how do you expect to command anyone?",
-    "Your incompetence is irritating. Mention the one who shall receive power."
-]
+    # If the user is not found in the database (unknown user)
+    if not user:
+        users_collection.insert_one({"_id": sender, "messages": 1, "warnings": 5, "approved": False})
+        await event.reply("You've sent your first message. I need your approval to continue.")
+    else:
+        if user["approved"]:
+            # User is approved, allow them to send unlimited messages
+            pass
+        else:
+            # Check if the user sent a sticker or text message
+            if event.is_reply:
+                return  # Ignore replies to messages, as these are not new messages.
 
-MISSING_REPLY_DEMOTE = [
-    "Who am I to demote? Speak clearly, or remain silent forever.",
-    "Are you too weak to even point out your failure? Name them, or be gone.",
-    "I do not play games. If you cannot follow simple commands, do not waste my time.",
-    "You wish to strip someone of their title, yet you hesitate? Pathetic."
-]
+            if event.text:  # Regular text message
+                if user["messages"] > 1:
+                    await event.delete()
+                    remaining_warnings = user["warnings"]
+                    if remaining_warnings > 1:
+                        await send_warning(event, sender, remaining_warnings - 1)
+                    else:
+                        # Block the user if they exceed the warning limit
+                        await event.reply("You are blocked for violating the message limit!")
+                        users_collection.update_one({"_id": sender}, {"$set": {"approved": False}})
+                        await event.delete()
+                else:
+                    # Update the number of messages the user sent
+                    users_collection.update_one({"_id": sender}, {"$set": {"messages": user["messages"] + 1}})
 
-RANDOM_TITLES = [
-    "Shadow Enforcer",
-    "Harbinger of Order",
-    "The Unseen Hand",
-    "Master of the Dominion",
-    "Keeper of Silence"
-]
+            elif event.sticker:  # Sticker message
+                if user["messages"] > 2:
+                    await event.delete()
+                    remaining_warnings = user["warnings"]
+                    if remaining_warnings > 1:
+                        await send_warning(event, sender, remaining_warnings - 1)
+                    else:
+                        # Block the user if they exceed the warning limit
+                        await event.reply("You are blocked for violating the sticker limit!")
+                        users_collection.update_one({"_id": sender}, {"$set": {"approved": False}})
+                        await event.delete()
+                else:
+                    # Update the number of messages the user sent
+                    users_collection.update_one({"_id": sender}, {"$set": {"messages": user["messages"] + 1}})
 
-async def is_admin_with_promotion_rights(context: CallbackContext, chat_id: int, user_id: int) -> bool:
-    """Check if the mortal is worthy of power... or doomed to servitude."""
-    member = await context.bot.get_chat_member(chat_id, user_id)
-    return isinstance(member, ChatMemberOwner) or (isinstance(member, ChatMemberAdministrator) and member.can_promote_members)
+            else:  # If the message is neither text nor a sticker (e.g., photo, link)
+                await event.delete()
+                await event.reply("You are blocked for sending unsupported content!")
+                users_collection.update_one({"_id": sender}, {"$set": {"approved": False}})
+                await event.delete()
 
-async def promote(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    user_id = update.message.from_user.id  
+# Command to approve the user
+@telegram_client.on(events.NewMessage(pattern='/approve'))
+async def approve_user(event):
+    sender = event.sender_id
+    user = users_collection.find_one({"_id": sender})
 
-    if not await is_admin_with_promotion_rights(context, chat_id, user_id):  
-        await update.message.reply_text(random.choice(DENIED_MESSAGES))
-        return
+    if user:
+        users_collection.update_one({"_id": sender}, {"$set": {"approved": True}})
+        await event.reply(f"User {sender} has been approved.")
+    else:
+        await event.reply(f"No such user {sender} to approve!")
 
-    if not update.message.reply_to_message:
-        await update.message.reply_text(random.choice(MISSING_REPLY_MESSAGES))
-        return
+# Command to unapprove the user
+@telegram_client.on(events.NewMessage(pattern='/unapprove'))
+async def unapprove_user(event):
+    sender = event.sender_id
+    user = users_collection.find_one({"_id": sender})
 
-    target_user_id = update.message.reply_to_message.from_user.id
-    title = " ".join(context.args) if context.args else random.choice(RANDOM_TITLES)  
+    if user:
+        users_collection.update_one({"_id": sender}, {"$set": {"approved": False}})
+        await event.reply(f"User {sender} has been unapproved.")
+    else:
+        await event.reply(f"No such user {sender} to unapprove!")
 
-    try:
-        await context.bot.promote_chat_member(
-            chat_id,
-            target_user_id,
-            can_manage_chat=True,
-            can_delete_messages=True,
-            can_restrict_members=True,
-            can_promote_members=False
-        )
-        await context.bot.set_chat_administrator_custom_title(chat_id, target_user_id, title)
-        
-        await update.message.reply_text(random.choice(PROMOTE_MESSAGES))
-    except Exception as e:
-        print(f"Promotion Error: {e}")
-        await update.message.reply_text("Something interferes… but nothing escapes my grasp forever. This failure will be corrected.")
+# Command to ban the user
+@telegram_client.on(events.NewMessage(pattern='/ban'))
+async def ban_user(event):
+    sender = event.sender_id
+    user = users_collection.find_one({"_id": sender})
 
-async def demote(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    user_id = update.message.from_user.id  
+    if user:
+        users_collection.update_one({"_id": sender}, {"$set": {"approved": False}})
+        await event.reply(f"User {sender} has been banned and will no longer be able to message.")
+    else:
+        await event.reply(f"No such user {sender} to ban!")
 
-    if not await is_admin_with_promotion_rights(context, chat_id, user_id):  
-        await update.message.reply_text(random.choice(DENIED_MESSAGES))
-        return
-
-    if not update.message.reply_to_message:
-        await update.message.reply_text(random.choice(MISSING_REPLY_DEMOTE))
-        return
-
-    target_user_id = update.message.reply_to_message.from_user.id
-    
-    try:
-        await context.bot.promote_chat_member(
-            chat_id,
-            target_user_id,
-            can_manage_chat=False,
-            can_delete_messages=False,
-            can_restrict_members=False,
-            can_promote_members=False
-        )
-        await update.message.reply_text(random.choice(DEMOTE_MESSAGES))
-    except Exception as e:
-        print(f"Demotion Error: {e}")
-        await update.message.reply_text("A disturbance… but ultimately meaningless. Your power has been revoked.")
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
-
-    app.add_handler(CommandHandler("promote", promote))
-    app.add_handler(CommandHandler("demote", demote))
-    
-    print("👁️ The unseen force has awakened… 👁️")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+# Start the bot
+telegram_client.start()
+telegram_client.run_until_disconnected()
