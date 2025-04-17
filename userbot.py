@@ -15,11 +15,13 @@ users_collection = db['users']
 # Telegram credentials from .env file
 api_id = int(os.getenv('API_ID'))  # Replace with your API ID from Telegram Developer Portal
 api_hash = os.getenv('API_HASH')  # Replace with your API Hash from Telegram Developer Portal
-phone_number = os.getenv('PHONE_NUMBER')  # Your phone number for login
-session_name = "userbot_session"
+phone_number = os.getenv('PHONE_NUMBER')  # Load phone number from .env (for authentication)
 
 # Initialize the Telegram client (Userbot)
-telegram_client = TelegramClient(session_name, api_id, api_hash)
+telegram_client = TelegramClient('userbot', api_id, api_hash)
+
+# Start the client and authenticate using phone number
+telegram_client.start(phone_number=phone_number)
 
 # Helper function to send warnings
 async def send_warning(event, sender, remaining_warnings):
@@ -118,5 +120,4 @@ async def ban_user(event):
         await event.reply(f"No such user {sender} to ban!")
 
 # Start the bot
-telegram_client.start(phone_number)  # Providing the phone number directly to the start method
 telegram_client.run_until_disconnected()
