@@ -41,10 +41,12 @@ async def handler(event):
     sender = event.sender_id
     user = users_collection.find_one({"_id": sender})
 
+    # If the user is banned, ignore the message
     if user and user.get("banned"):
         await event.reply("You are banned from messaging this account.")
         return
 
+    # If the user is unknown and is not approved
     if not user:
         users_collection.insert_one({"_id": sender, "messages": 1, "warnings": 5, "approved": False})
         await event.reply("You've sent your first message. I need your approval to continue.")
@@ -79,7 +81,7 @@ async def send_warning(event, sender, remaining):
     await event.reply(f"Warning {5 - remaining}/5: {remaining} warnings left.")
     users_collection.update_one({"_id": sender}, {"$set": {"warnings": remaining}})
 
-@telegram_client.on(events.NewMessage(pattern='/approve'))
+@telegram_client.on(events.NewMessage(pattern='.approve'))
 async def approve_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -90,7 +92,7 @@ async def approve_user(event):
     else:
         await event.reply("Reply to a message to approve.")
 
-@telegram_client.on(events.NewMessage(pattern='/unapprove'))
+@telegram_client.on(events.NewMessage(pattern='.unapprove'))
 async def unapprove_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -99,7 +101,7 @@ async def unapprove_user(event):
         users_collection.update_one({"_id": user_id}, {"$set": {"approved": False}})
         await event.reply(f"❌ User `{user_id}` unapproved.", parse_mode="md")
 
-@telegram_client.on(events.NewMessage(pattern='/ban'))
+@telegram_client.on(events.NewMessage(pattern='.ban'))
 async def ban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -108,13 +110,13 @@ async def ban_user(event):
         users_collection.update_one({"_id": user_id}, {"$set": {"approved": False, "banned": True}})
         await event.reply(f"⛔ User `{user_id}` banned.", parse_mode="md")
 
-@telegram_client.on(events.NewMessage(pattern=r'/unban(?:\s+(.+))?'))
+@telegram_client.on(events.NewMessage(pattern=r'.unban(?:\s+(.+))?'))
 async def unban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     args = event.pattern_match.group(1)
     if not args:
-        await event.reply("Usage: `/unban <user_id or username>`", parse_mode="md")
+        await event.reply("Usage: `.unban <user_id or username>`", parse_mode="md")
         return
     try:
         user_id = int(args) if args.isdigit() else (await telegram_client.get_entity(args)).id
@@ -123,7 +125,7 @@ async def unban_user(event):
     except Exception as e:
         await event.reply(f"Error: {str(e)}")
 
-@telegram_client.on(events.NewMessage(pattern='/astat'))
+@telegram_client.on(events.NewMessage(pattern='.astat'))
 async def approved_status(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -131,7 +133,7 @@ async def approved_status(event):
     text = "\n".join([f"`{u['_id']}`" for u in users]) or "No approved users found."
     await event.reply(f"**Approved Users:**\n{text}")
 
-@telegram_client.on(events.NewMessage(pattern='/bstat'))
+@telegram_client.on(events.NewMessage(pattern='.bstat'))
 async def banned_status(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -139,20 +141,20 @@ async def banned_status(event):
     text = "\n".join([f"`{u['_id']}`" for u in users]) or "No banned users found."
     await event.reply(f"**Banned Users:**\n{text}")
 
-@telegram_client.on(events.NewMessage(pattern='/help'))
+@telegram_client.on(events.NewMessage(pattern='.help'))
 async def help_command(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     await event.reply("""
 **UserBot Admin Help**
 Available commands:
-/approve – Reply to approve a user.
-/unapprove – Reply to unapprove a user.
-/ban – Reply to ban a user.
-/unban <id or username> – Unban a user.
-/astat – View all approved users.
-/bstat – View all banned users.
-/help – This message.
+.approve – Reply to approve a user.
+.unapprove – Reply to unapprove a user.
+.ban – Reply to ban a user.
+.unban <id or username> – Unban a user.
+.astat – View all approved users.
+.bstat – View all banned users.
+.help – This message.
     """.strip(), parse_mode="md")
 
 # Start
