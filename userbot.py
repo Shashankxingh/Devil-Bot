@@ -1,7 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from telethon import TelegramClient, events, Button
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from pymongo import MongoClient
 from threading import Thread
@@ -35,19 +35,19 @@ Thread(target=keep_alive).start()
 # Handlers
 @telegram_client.on(events.NewMessage(incoming=True))
 async def handler(event):
-    if event.is_group or event.is_channel:
+    if event.is_group or event.is_channel or event.sender_id == OWNER_ID:
         return
 
     sender = event.sender_id
     user = users_collection.find_one({"_id": sender})
 
     if user and user.get("banned"):
-        await event.reply("You are banned from messaging this account.")
+        await event.reply("⟶ 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘣𝘢𝘯𝘯𝘦𝘥 𝘧𝘳𝘰𝘮 𝘮𝘦𝘴𝘴𝘢𝘨𝘪𝘯𝘨 𝘵𝘩𝘪𝘴 𝘢𝘤𝘤𝘰𝘶𝘯𝘵.")
         return
 
     if not user:
         users_collection.insert_one({"_id": sender, "messages": 1, "warnings": 5, "approved": False})
-        await event.reply("You've sent your first message. I need your approval to continue.")
+        await event.reply("⟶ 𝘠𝘰𝘶'𝘷𝘦 𝘴𝘦𝘯𝘵 𝘺𝘰𝘶𝘳 𝘧𝘪𝘳𝘴𝘵 𝘮𝘦𝘴𝘴𝘢𝘨𝘦. 𝘗𝘭𝘦𝘢𝘴𝘦 𝘸𝘢𝘪𝘵 𝘧𝘰𝘳 𝘢𝘱𝘱𝘳𝘰𝘷𝘢𝘭.")
     elif not user["approved"]:
         if event.is_reply:
             return
@@ -57,7 +57,7 @@ async def handler(event):
                 if user["warnings"] > 1:
                     await send_warning(event, sender, user["warnings"] - 1)
                 else:
-                    await event.reply("You are blocked for violating the message limit!")
+                    await event.reply("⟶ 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘯𝘰𝘸 𝘣𝘭𝘰𝘤𝘬𝘦𝘥 𝘧𝘰𝘳 𝘴𝘱𝘢𝘮.")
                     users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
             else:
                 users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
@@ -67,100 +67,84 @@ async def handler(event):
                 if user["warnings"] > 1:
                     await send_warning(event, sender, user["warnings"] - 1)
                 else:
-                    await event.reply("You are blocked for violating the sticker limit!")
+                    await event.reply("⟶ 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘯𝘰𝘸 𝘣𝘭𝘰𝘤𝘬𝘦𝘥 𝘧𝘰𝘳 𝘴𝘵𝘪𝘤𝘬𝘦𝘳 𝘴𝘱𝘢𝘮.")
                     users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
             else:
                 users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
         else:
-            await event.reply("You are blocked for sending unsupported content!")
+            await event.reply("⟶ 𝘜𝘯𝘴𝘶𝘱𝘱𝘰𝘳𝘵𝘦𝘥 𝘤𝘰𝘯𝘵𝘦𝘯𝘵. 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘣𝘢𝘯𝘯𝘦𝘥.")
             users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
 
 async def send_warning(event, sender, remaining):
-    await event.reply(f"Warning {5 - remaining}/5: {remaining} warnings left.")
+    await event.reply(f"⟶ 𝘞𝘢𝘳𝘯𝘪𝘯𝘨 {5 - remaining}/5: {remaining} 𝘸𝘢𝘳𝘯𝘪𝘯𝘨𝘴 𝘭𝘦𝘧𝘵.")
     users_collection.update_one({"_id": sender}, {"$set": {"warnings": remaining}})
 
+# Admin Commands
 @telegram_client.on(events.NewMessage(pattern=r'\.approve'))
 async def approve_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    if event.is_reply:
-        user_id = (await event.get_reply_message()).sender_id
-        users_collection.update_one({"_id": user_id}, {"$set": {"approved": True, "banned": False, "warnings": 5, "messages": 0}})
-        await event.reply(f"✅ User `{user_id}` approved.", parse_mode="md")
-    else:
-        await event.reply("Reply to a message to approve.")
+    user_id = event.chat_id
+    users_collection.update_one(
+        {"_id": user_id},
+        {"$set": {"approved": True, "banned": False, "warnings": 5, "messages": 0}},
+        upsert=True
+    )
+    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥.", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern=r'\.unapprove'))
 async def unapprove_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    if event.is_reply:
-        user_id = (await event.get_reply_message()).sender_id
-        users_collection.update_one({"_id": user_id}, {"$set": {"approved": False}})
-        await event.reply(f"❌ User `{user_id}` unapproved.", parse_mode="md")
-    else:
-        users_collection.update_many({"approved": True}, {"$set": {"approved": False}})
-        await event.reply("✅ All users unapproved.", parse_mode="md")
+    user_id = event.chat_id
+    users_collection.update_one({"_id": user_id}, {"$set": {"approved": False}})
+    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘶𝘯𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥.", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern=r'\.ban'))
 async def ban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    if event.is_reply:
-        user_id = (await event.get_reply_message()).sender_id
-        users_collection.update_one({"_id": user_id}, {"$set": {"approved": False, "banned": True}})
-        await event.reply(f"⛔ User `{user_id}` banned.", parse_mode="md")
-    else:
-        users_collection.update_many({"approved": True}, {"$set": {"approved": False, "banned": True}})
-        await event.reply("✅ All users banned.", parse_mode="md")
+    user_id = event.chat_id
+    users_collection.update_one({"_id": user_id}, {"$set": {"approved": False, "banned": True}})
+    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘣𝘢𝘯𝘯𝘦𝘥.", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern=r'\.unban'))
 async def unban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    if event.is_reply:
-        user_id = (await event.get_reply_message()).sender_id
-        users_collection.update_one({"_id": user_id}, {"$set": {"banned": False}})
-        await event.reply(f"✅ User `{user_id}` unbanned.", parse_mode="md")
-    else:
-        args = event.pattern_match.group(1)
-        try:
-            user_id = int(args) if args.isdigit() else (await telegram_client.get_entity(args)).id
-            users_collection.update_one({"_id": user_id}, {"$set": {"banned": False}})
-            await event.reply(f"✅ User `{user_id}` unbanned.", parse_mode="md")
-        except Exception as e:
-            await event.reply(f"Error: {str(e)}")
+    user_id = event.chat_id
+    users_collection.update_one({"_id": user_id}, {"$set": {"banned": False}})
+    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘶𝘯𝘣𝘢𝘯𝘯𝘦𝘥.", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern=r'\.astat'))
 async def approved_users(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     users = users_collection.find({"approved": True})
-    text = "\n".join([f"`{u['_id']}`" for u in users]) or "No approved users found."
-    await event.reply(f"**Approved Users:**\n{text}")
+    text = "\n".join([f"`{u['_id']}`" for u in users]) or "⟶ 𝘕𝘰 𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥 𝘶𝘴𝘦𝘳𝘴."
+    await event.reply(f"**⟶ 𝘈𝘱𝘱𝘳𝘰𝘷𝘦𝘥 𝘜𝘴𝘦𝘳𝘴:**\n{text}", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern=r'\.bstat'))
 async def banned_users(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     users = users_collection.find({"banned": True})
-    text = "\n".join([f"`{u['_id']}`" for u in users]) or "No banned users found."
-    await event.reply(f"**Banned Users:**\n{text}")
+    text = "\n".join([f"`{u['_id']}`" for u in users]) or "⟶ 𝘕𝘰 𝘣𝘢𝘯𝘯𝘦𝘥 𝘶𝘴𝘦𝘳𝘴."
+    await event.reply(f"**⟶ 𝘉𝘢𝘯𝘯𝘦𝘥 𝘜𝘴𝘦𝘳𝘴:**\n{text}", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern=r'\.help'))
 async def help_command(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     await event.reply("""
-**UserBot Admin Help**
-Available commands:
-.approve – Reply to approve a user.
-.unapprove – Reply to unapprove a user or unapprove everyone.
-.ban – Reply to ban a user or ban everyone.
-.unban <id or username> – Unban a user.
-.astat – View all approved users.
-.bstat – View all banned users.
-.help – This message.
+**⟶ 𝘈𝘥𝘮𝘪𝘯 𝘊𝘰𝘮𝘮𝘢𝘯𝘥𝘴**
+• `.approve` – 𝘈𝘱𝘱𝘳𝘰𝘷𝘦 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
+• `.unapprove` – 𝘜𝘯𝘢𝘱𝘱𝘳𝘰𝘷𝘦 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
+• `.ban` – 𝘉𝘢𝘯 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
+• `.unban` – 𝘜𝘯𝘣𝘢𝘯 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
+• `.astat` – 𝘚𝘩𝘰𝘸 𝘢𝘭𝘭 𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥 𝘶𝘴𝘦𝘳𝘴.
+• `.bstat` – 𝘚𝘩𝘰𝘸 𝘢𝘭𝘭 𝘣𝘢𝘯𝘯𝘦𝘥 𝘶𝘴𝘦𝘳𝘴.
+• `.help` – 𝘚𝘩𝘰𝘸 𝘩𝘦𝘭𝘱 𝘮𝘦𝘯𝘶.
     """, parse_mode="md")
 
 # Start
