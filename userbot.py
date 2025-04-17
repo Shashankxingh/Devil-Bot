@@ -27,7 +27,7 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 # Initialize client
 telegram_client = TelegramClient(StringSession(session_string), api_id, api_hash)
 
-# --- Main message handler ---
+# --- Message handler ---
 @telegram_client.on(events.NewMessage(incoming=True))
 async def handler(event):
     if event.is_group or event.is_channel:
@@ -50,7 +50,6 @@ async def handler(event):
                 else:
                     await event.reply("You are blocked for violating the message limit!")
                     users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
-                    await event.delete()
             else:
                 users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
         elif event.sticker:
@@ -61,44 +60,56 @@ async def handler(event):
                 else:
                     await event.reply("You are blocked for violating the sticker limit!")
                     users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
-                    await event.delete()
             else:
                 users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
         else:
             await event.reply("You are blocked for sending unsupported content!")
             users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
-            await event.delete()
 
 async def send_warning(event, sender, remaining_warnings):
     await event.reply(f"Warning {5 - remaining_warnings}/5: You have {remaining_warnings} warnings left.")
     users_collection.update_one({"_id": sender}, {"$set": {"warnings": remaining_warnings}})
 
-# --- Admin commands ---
+# --- Admin Commands (Reply-only in DM) ---
 @telegram_client.on(events.NewMessage(pattern='/approve'))
 async def approve_user(event):
-    if event.sender_id != OWNER_ID:
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    users_collection.update_one({"_id": event.sender_id}, {"$set": {"approved": True, "banned": False}})
-    await event.reply(f"User {event.sender_id} approved.")
+    if event.is_reply:
+        replied = await event.get_reply_message()
+        user_id = replied.sender_id
+        users_collection.update_one({"_id": user_id}, {"$set": {"approved": True, "banned": False}})
+        await event.reply(f"✅ User `{user_id}` approved.", parse_mode="md")
+    else:
+        await event.reply("Please reply to a user's message to approve them.")
 
 @telegram_client.on(events.NewMessage(pattern='/unapprove'))
 async def unapprove_user(event):
-    if event.sender_id != OWNER_ID:
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    users_collection.update_one({"_id": event.sender_id}, {"$set": {"approved": False}})
-    await event.reply(f"User {event.sender_id} unapproved.")
+    if event.is_reply:
+        replied = await event.get_reply_message()
+        user_id = replied.sender_id
+        users_collection.update_one({"_id": user_id}, {"$set": {"approved": False}})
+        await event.reply(f"❌ User `{user_id}` unapproved.", parse_mode="md")
+    else:
+        await event.reply("Please reply to a user's message to unapprove them.")
 
 @telegram_client.on(events.NewMessage(pattern='/ban'))
 async def ban_user(event):
-    if event.sender_id != OWNER_ID:
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    users_collection.update_one({"_id": event.sender_id}, {"$set": {"approved": False, "banned": True}})
-    await event.reply(f"User {event.sender_id} has been banned.")
+    if event.is_reply:
+        replied = await event.get_reply_message()
+        user_id = replied.sender_id
+        users_collection.update_one({"_id": user_id}, {"$set": {"approved": False, "banned": True}})
+        await event.reply(f"⛔ User `{user_id}` has been banned.", parse_mode="md")
+    else:
+        await event.reply("Please reply to a user's message to ban them.")
 
-# --- Unban Command ---
 @telegram_client.on(events.NewMessage(pattern=r'/unban(?:\s+(.+))?'))
 async def unban_user(event):
-    if event.sender_id != OWNER_ID:
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
 
     args = event.pattern_match.group(1)
@@ -125,7 +136,7 @@ async def unban_user(event):
 # --- Status menu and buttons ---
 @telegram_client.on(events.NewMessage(pattern='/status'))
 async def status_menu(event):
-    if event.sender_id != OWNER_ID:
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     buttons = [
         [Button.inline("✅ Approved", data=b"approved")],
@@ -155,6 +166,27 @@ async def handle_callback(event):
         users = users_collection.find({"banned": True})
         text = "\n".join([f"`{u['_id']}`" for u in users]) or "No banned users."
         await event.edit(f"⛔ **Banned Users:**\n{text}")
+
+# --- Help command ---
+@telegram_client.on(events.NewMessage(pattern='/help'))
+async def help_command(event):
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
+        return
+
+    help_text = """
+**UserBot Admin Help**
+Here are the available commands (use in DM only):
+
+/approve – Reply to a user's message to approve them.
+/unapprove – Reply to a user's message to unapprove them.
+/ban – Reply to a user's message to ban them.
+/unban <id or username> – Unban a user by ID or username.
+/status – View approved/unapproved/banned users.
+/help – Show this help message.
+
+All commands must be used in **private chat**, and most require **replying** to the user's message.
+"""
+    await event.reply(help_text.strip(), parse_mode="md")
 
 # --- Start bot ---
 logger.info("Starting userbot...")
