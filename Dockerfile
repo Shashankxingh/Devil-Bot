@@ -15,11 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Install tini to handle multiple processes
-RUN apt-get update && apt-get install -y tini
-
-# Expose a dummy port to satisfy Render's requirement for an open port
+# Expose port 10000 to satisfy Render's requirements
 EXPOSE 10000
 
-# Start both the dummy HTTP server and the bot (Userbot)
-CMD ["tini", "--", "sh", "-c", "python3 -m http.server 10000 & python3 userbot.py"]
+# Start the bot (Userbot)
+CMD ["python3", "userbot.py"]
