@@ -41,12 +41,10 @@ async def handler(event):
     sender = event.sender_id
     user = users_collection.find_one({"_id": sender})
 
-    # If the user is banned, ignore the message
     if user and user.get("banned"):
         await event.reply("You are banned from messaging this account.")
         return
 
-    # If the user is unknown and is not approved
     if not user:
         users_collection.insert_one({"_id": sender, "messages": 1, "warnings": 5, "approved": False})
         await event.reply("You've sent your first message. I need your approval to continue.")
@@ -64,15 +62,15 @@ async def handler(event):
             else:
                 users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
         elif event.sticker:
-            await event.delete()  # Delete the sticker
-            if user["warnings"] > 1:
-                await send_warning(event, sender, user["warnings"] - 1)
+            if user["messages"] > 2:
+                await event.delete()
+                if user["warnings"] > 1:
+                    await send_warning(event, sender, user["warnings"] - 1)
+                else:
+                    await event.reply("You are blocked for violating the sticker limit!")
+                    users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
             else:
-                await event.reply("You are blocked for sending stickers!")
-                users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
-        elif event.media:  # Handling other media files (images, videos, etc.)
-            await event.reply("You are blocked for sending unsupported media!")
-            users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
+                users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
         else:
             await event.reply("You are blocked for sending unsupported content!")
             users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
@@ -100,6 +98,9 @@ async def unapprove_user(event):
         user_id = (await event.get_reply_message()).sender_id
         users_collection.update_one({"_id": user_id}, {"$set": {"approved": False}})
         await event.reply(f"❌ User `{user_id}` unapproved.", parse_mode="md")
+    else:
+        users_collection.update_many({"approved": True}, {"$set": {"approved": False}})
+        await event.reply("✅ All users unapproved.", parse_mode="md")
 
 @telegram_client.on(events.NewMessage(pattern='.ban'))
 async def ban_user(event):
@@ -109,24 +110,29 @@ async def ban_user(event):
         user_id = (await event.get_reply_message()).sender_id
         users_collection.update_one({"_id": user_id}, {"$set": {"approved": False, "banned": True}})
         await event.reply(f"⛔ User `{user_id}` banned.", parse_mode="md")
+    else:
+        users_collection.update_many({"approved": True}, {"$set": {"approved": False, "banned": True}})
+        await event.reply("✅ All users banned.", parse_mode="md")
 
-@telegram_client.on(events.NewMessage(pattern=r'.unban(?:\s+(.+))?'))
+@telegram_client.on(events.NewMessage(pattern='.unban'))
 async def unban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    args = event.pattern_match.group(1)
-    if not args:
-        await event.reply("Usage: `.unban <user_id or username>`", parse_mode="md")
-        return
-    try:
-        user_id = int(args) if args.isdigit() else (await telegram_client.get_entity(args)).id
+    if event.is_reply:
+        user_id = (await event.get_reply_message()).sender_id
         users_collection.update_one({"_id": user_id}, {"$set": {"banned": False}})
         await event.reply(f"✅ User `{user_id}` unbanned.", parse_mode="md")
-    except Exception as e:
-        await event.reply(f"Error: {str(e)}")
+    else:
+        args = event.pattern_match.group(1)
+        try:
+            user_id = int(args) if args.isdigit() else (await telegram_client.get_entity(args)).id
+            users_collection.update_one({"_id": user_id}, {"$set": {"banned": False}})
+            await event.reply(f"✅ User `{user_id}` unbanned.", parse_mode="md")
+        except Exception as e:
+            await event.reply(f"Error: {str(e)}")
 
 @telegram_client.on(events.NewMessage(pattern='.astat'))
-async def approved_status(event):
+async def approved_users(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     users = users_collection.find({"approved": True})
@@ -134,7 +140,7 @@ async def approved_status(event):
     await event.reply(f"**Approved Users:**\n{text}")
 
 @telegram_client.on(events.NewMessage(pattern='.bstat'))
-async def banned_status(event):
+async def banned_users(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
     users = users_collection.find({"banned": True})
@@ -149,13 +155,13 @@ async def help_command(event):
 **UserBot Admin Help**
 Available commands:
 .approve – Reply to approve a user.
-.unapprove – Reply to unapprove a user.
-.ban – Reply to ban a user.
+.unapprove – Reply to unapprove a user or unapprove everyone.
+.ban – Reply to ban a user or ban everyone.
 .unban <id or username> – Unban a user.
 .astat – View all approved users.
 .bstat – View all banned users.
 .help – This message.
-    """.strip(), parse_mode="md")
+    """, parse_mode="md")
 
 # Start
 logger.info("Starting userbot...")
