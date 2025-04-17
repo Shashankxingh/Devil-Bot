@@ -62,15 +62,15 @@ async def handler(event):
             else:
                 users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
         elif event.sticker:
-            if user["messages"] > 2:
-                await event.delete()
-                if user["warnings"] > 1:
-                    await send_warning(event, sender, user["warnings"] - 1)
-                else:
-                    await event.reply("You are blocked for violating the sticker limit!")
-                    users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
+            await event.delete()  # Delete the sticker
+            if user["warnings"] > 1:
+                await send_warning(event, sender, user["warnings"] - 1)
             else:
-                users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
+                await event.reply("You are blocked for sending stickers!")
+                users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
+        elif event.media:  # Handling other media files (images, videos, etc.)
+            await event.reply("You are blocked for sending unsupported media!")
+            users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
         else:
             await event.reply("You are blocked for sending unsupported content!")
             users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
@@ -123,32 +123,21 @@ async def unban_user(event):
     except Exception as e:
         await event.reply(f"Error: {str(e)}")
 
-@telegram_client.on(events.NewMessage(pattern='/status'))
-async def status_menu(event):
+@telegram_client.on(events.NewMessage(pattern='/astat'))
+async def approved_status(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-    buttons = [
-        [Button.inline("✅ Approved", data=b"approved")],
-        [Button.inline("❌ Unapproved", data=b"unapproved")],
-        [Button.inline("⛔ Banned", data=b"banned")]
-    ]
-    await event.respond("Select a category to view users:", buttons=buttons)
+    users = users_collection.find({"approved": True})
+    text = "\n".join([f"`{u['_id']}`" for u in users]) or "No approved users found."
+    await event.reply(f"**Approved Users:**\n{text}")
 
-@telegram_client.on(events.CallbackQuery)
-async def handle_callback(event):
-    if event.sender_id != OWNER_ID:
-        await event.answer("Unauthorized.", alert=True)
+@telegram_client.on(events.NewMessage(pattern='/bstat'))
+async def banned_status(event):
+    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
-
-    data = event.data.decode("utf-8")
-    query_map = {
-        "approved": {"approved": True},
-        "unapproved": {"approved": False, "banned": {"$ne": True}},
-        "banned": {"banned": True}
-    }
-    users = users_collection.find(query_map[data])
-    text = "\n".join([f"`{u['_id']}`" for u in users]) or "No users found."
-    await event.edit(f"**{data.capitalize()} Users:**\n{text}")
+    users = users_collection.find({"banned": True})
+    text = "\n".join([f"`{u['_id']}`" for u in users]) or "No banned users found."
+    await event.reply(f"**Banned Users:**\n{text}")
 
 @telegram_client.on(events.NewMessage(pattern='/help'))
 async def help_command(event):
@@ -161,7 +150,8 @@ Available commands:
 /unapprove – Reply to unapprove a user.
 /ban – Reply to ban a user.
 /unban <id or username> – Unban a user.
-/status – View all user statuses.
+/astat – View all approved users.
+/bstat – View all banned users.
 /help – This message.
     """.strip(), parse_mode="md")
 
