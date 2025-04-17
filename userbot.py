@@ -79,7 +79,7 @@ async def send_warning(event, sender, remaining):
     await event.reply(f"Warning {5 - remaining}/5: {remaining} warnings left.")
     users_collection.update_one({"_id": sender}, {"$set": {"warnings": remaining}})
 
-@telegram_client.on(events.NewMessage(pattern='.approve'))
+@telegram_client.on(events.NewMessage(pattern=r'\.approve'))
 async def approve_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -90,7 +90,7 @@ async def approve_user(event):
     else:
         await event.reply("Reply to a message to approve.")
 
-@telegram_client.on(events.NewMessage(pattern='.unapprove'))
+@telegram_client.on(events.NewMessage(pattern=r'\.unapprove'))
 async def unapprove_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -102,7 +102,7 @@ async def unapprove_user(event):
         users_collection.update_many({"approved": True}, {"$set": {"approved": False}})
         await event.reply("✅ All users unapproved.", parse_mode="md")
 
-@telegram_client.on(events.NewMessage(pattern='.ban'))
+@telegram_client.on(events.NewMessage(pattern=r'\.ban'))
 async def ban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -114,7 +114,7 @@ async def ban_user(event):
         users_collection.update_many({"approved": True}, {"$set": {"approved": False, "banned": True}})
         await event.reply("✅ All users banned.", parse_mode="md")
 
-@telegram_client.on(events.NewMessage(pattern='.unban'))
+@telegram_client.on(events.NewMessage(pattern=r'\.unban'))
 async def unban_user(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -131,7 +131,7 @@ async def unban_user(event):
         except Exception as e:
             await event.reply(f"Error: {str(e)}")
 
-@telegram_client.on(events.NewMessage(pattern='.astat'))
+@telegram_client.on(events.NewMessage(pattern=r'\.astat'))
 async def approved_users(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -139,7 +139,7 @@ async def approved_users(event):
     text = "\n".join([f"`{u['_id']}`" for u in users]) or "No approved users found."
     await event.reply(f"**Approved Users:**\n{text}")
 
-@telegram_client.on(events.NewMessage(pattern='.bstat'))
+@telegram_client.on(events.NewMessage(pattern=r'\.bstat'))
 async def banned_users(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
@@ -147,7 +147,7 @@ async def banned_users(event):
     text = "\n".join([f"`{u['_id']}`" for u in users]) or "No banned users found."
     await event.reply(f"**Banned Users:**\n{text}")
 
-@telegram_client.on(events.NewMessage(pattern='.help'))
+@telegram_client.on(events.NewMessage(pattern=r'\.help'))
 async def help_command(event):
     if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
         return
