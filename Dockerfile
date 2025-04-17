@@ -1,23 +1,25 @@
-# Use the official Python image as a base image
-FROM python:3.9-slim
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
 
-# Set the working directory in the container
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Create working directory
 WORKDIR /app
 
-# Copy the requirements.txt file into the container
+# Install dependencies
 COPY requirements.txt .
-
-# Install the required Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all files from the current directory to the container's working directory
+# Copy project files
 COPY . .
 
-# Set environment variables (if any, replace these with actual values in your environment)
-# Example: Set the Telegram API ID, Hash, and Mongo URI in the Dockerfile (you can also use a .env file)
-# ENV API_ID=<your_api_id>
-# ENV API_HASH=<your_api_hash>
-# ENV MONGO_URI=<your_mongo_uri>
+# Install tini to handle multiple processes
+RUN apt-get update && apt-get install -y tini
 
-# Run the userbot.py script when the container starts
-CMD ["python", "userbot.py"]
+# Expose a dummy port to satisfy Render's requirement for an open port
+EXPOSE 10000
+
+# Start both the dummy HTTP server and your userbot
+CMD ["tini", "--", "sh", "-c", "python3 -m http.server 10000 & python3 userbot.py"]
