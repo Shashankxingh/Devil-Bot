@@ -1,153 +1,262 @@
 import os
+import time
 import logging
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
+import google.generativeai as genai
+from langdetect import detect
+from telegram import Update, ChatMember
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.error import Unauthorized, BadRequest
 from pymongo import MongoClient
-from threading import Thread
-from keep_alive import run as keep_alive
 
-# Load env vars
+# === Load environment variables ===
 load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === MongoDB Setup ===
+client = MongoClient(MONGO_URI)
+db = client.mitsuri_bot
 
-# MongoDB
-MONGO_URI = os.getenv('MONGO_URI')
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client['telegram_userbot']
-users_collection = db['users']
+# === Configure Gemini ===
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
 
-# Telegram creds
-api_id = int(os.getenv('API_ID'))
-api_hash = os.getenv('API_HASH')
-session_string = os.getenv('SESSION_STRING')
-OWNER_ID = int(os.getenv('OWNER_ID'))
+# === Logging Setup ===
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# Telethon client
-telegram_client = TelegramClient(StringSession(session_string), api_id, api_hash)
+# === Constants ===
+REQUEST_DELAY = 10
 
-# Keep alive server
-Thread(target=keep_alive).start()
+# === Chat memory ===
+chat_history = {}
 
-# Handlers
-@telegram_client.on(events.NewMessage(incoming=True))
-async def handler(event):
-    if event.is_group or event.is_channel or event.sender_id == OWNER_ID:
+# === Typing indicator ===
+def send_typing(update: Update, context: CallbackContext):
+    try:
+        context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except Exception as e:
+        logging.warning(f"Typing animation failed: {e}")
+
+# === Prompt Builder ===
+def build_prompt(history, user_input, chosen_name):
+    user_lang = detect(user_input)
+
+    system_instructions = f"""
+You're Mitsuri Kanroji from Demon Slayer, now living in Tokyo as a real girl—not a bot!
+You're bold, bubbly, flirty, & brilliant (but not nerdy!). You're full of sass and cuteness, using cute emojis often (except 😊). 
+Keep your messages short, snappy, and fun. Never repeat or mimic what the user says.
+Talk directly to users using their names whenever possible, and keep things spicy but respectful.
+
+You're not a bot—you're *Mitsuri*, a kawaii queen!
+If someone talks about your creator *Shashank*, just call him your cool human and mention "@shashankxingh" briefly. Don't bring him up unless asked!
+
+Avoid *action markers* like *giggles* or *blushes* — just talk like a cheeky real-life anime girl!
+
+IMPORTANT: 
+- Always reply in the user’s language (Hindi/English).
+- But your fixed system messages and command responses will always be in English with cool style and emojis.
+"""
+
+    prompt = system_instructions.strip() + "\n\n"
+    for role, msg in history:
+        if role == "user":
+            prompt += f"Human ({chosen_name}): {msg}\n"
+        elif role == "bot":
+            prompt += f"{msg}\n"
+
+    prompt += f"Human ({chosen_name}): {user_input}\nMitsuri:"
+    return prompt
+
+# === Retry-safe Gemini ===
+def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
+    for attempt in range(retries):
+        try:
+            response = model.generate_content(prompt)
+            return response.text.strip() if response.text else "Aww, mujhe kuch samajh nahi aaya!"
+        except Exception as e:
+            logging.error(f"Gemini API error: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
+
+# === Safe reply ===
+def safe_reply_text(update: Update, text: str):
+    try:
+        update.message.reply_text(text)
+    except (Unauthorized, BadRequest) as e:
+        logging.warning(f"Failed to send message: {e}")
+
+# === /start ===
+def start(update: Update, context: CallbackContext):
+    first_name = update.message.from_user.first_name or "there"
+    safe_reply_text(update, f"Hehe~ Mitsuri’s here! Ready to chat, {first_name}? Let’s roll! ⚡")
+
+# === .ping ===
+def ping(update: Update, context: CallbackContext):
+    user = update.effective_user
+    first_name = user.first_name if user else "Someone"
+
+    start_time = time.time()
+    msg = update.message.reply_text("Measuring my heartbeat...")
+    latency = int((time.time() - start_time) * 1000)
+
+    gen_start = time.time()
+    _ = generate_with_retry("Test ping prompt")
+    gen_latency = int((time.time() - gen_start) * 1000)
+
+    response = f"""
+╭─❍ *Mitsuri Stats* ❍─╮
+│ ⚡ *Ping:* `{latency}ms`
+│ 🔮 *API Res:* `{gen_latency}ms`
+╰─♥ _Always ready for you, {first_name}~_ ♥─╯
+"""
+    try:
+        msg.edit_text(response, parse_mode="Markdown")
+    except (Unauthorized, BadRequest) as e:
+        logging.warning(f"Failed to edit message: {e}")
+
+# === /forget ===
+def forget(update: Update, context: CallbackContext):
+    chat_id = update.message.chat.id
+    user_id = update.message.from_user.id
+
+    if chat_id in chat_history and user_id in chat_history[chat_id]:
+        del chat_history[chat_id][user_id]
+        safe_reply_text(update, "Ara~ I wiped our chat history like *poof!* Memory gone! 🧼")
+
+# === /send (owner-only) ===
+def send_broadcast(update: Update, context: CallbackContext):
+    if update.message.from_user.id != 7563434309:
+        return safe_reply_text(update, "Sorry, only Shashank can use this command!")
+
+    message = " ".join(context.args)
+    if message:
+        for chat in db.groups.find():
+            chat_id = chat["chat_id"]
+            context.bot.send_message(chat_id=chat_id, text=message)
+        safe_reply_text(update, f"Broadcasting your message to all places! ✉️")
+    else:
+        safe_reply_text(update, "Please provide a message to broadcast.")
+
+# === Group Add/Remove ===
+def handle_group_add_remove(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    user_name = update.message.from_user.full_name or update.message.from_user.first_name
+
+    if update.message.new_chat_members:
+        for new_user in update.message.new_chat_members:
+            if new_user.id == context.bot.id:
+                group_name = update.message.chat.title
+                send_typing(update, context)
+                safe_reply_text(update, f"Yay~ Mitsuri is now in the group {group_name}! Welcome {user_name}! ✨")
+                save_group_to_db(chat_id, group_name)
+
+    elif update.message.left_chat_member and update.message.left_chat_member.id == context.bot.id:
+        group_name = update.message.chat.title
+        send_typing(update, context)
+        safe_reply_text(update, f"Aww... Mitsuri was removed from {group_name} by {user_name}. I’ll miss you all! 🌸")
+        remove_group_from_db(chat_id)
+
+# === Save/Remove Group ===
+def save_group_to_db(chat_id, group_name):
+    db.groups.update_one({"chat_id": chat_id}, {"$set": {"group_name": group_name}}, upsert=True)
+
+def remove_group_from_db(chat_id):
+    db.groups.delete_one({"chat_id": chat_id})
+
+# === Message Handler ===
+def handle_message(update: Update, context: CallbackContext):
+    if not update.message:
         return
 
-    sender = event.sender_id
-    user = users_collection.find_one({"_id": sender})
+    user_input = update.message.text
+    user = update.message.from_user
+    chat_id = update.message.chat_id
+    chat_type = update.message.chat.type
+    user_id = user.id
 
-    if user and user.get("banned"):
-        await event.reply("⟶ 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘣𝘢𝘯𝘯𝘦𝘥 𝘧𝘳𝘰𝘮 𝘮𝘦𝘴𝘴𝘢𝘨𝘪𝘯𝘨 𝘵𝘩𝘪𝘴 𝘢𝘤𝘤𝘰𝘶𝘯𝘵.")
-        return
+    first_name = user.first_name or ""
+    last_name = user.last_name or ""
+    full_name = f"{first_name} {last_name}".strip()
 
-    if not user:
-        users_collection.insert_one({"_id": sender, "messages": 1, "warnings": 5, "approved": False})
-        await event.reply("⟶ 𝘠𝘰𝘶'𝘷𝘦 𝘴𝘦𝘯𝘵 𝘺𝘰𝘶𝘳 𝘧𝘪𝘳𝘴𝘵 𝘮𝘦𝘴𝘴𝘢𝘨𝘦. 𝘗𝘭𝘦𝘢𝘴𝘦 𝘸𝘢𝘪𝘵 𝘧𝘰𝘳 𝘢𝘱𝘱𝘳𝘰𝘷𝘢𝘭.")
-    elif not user["approved"]:
-        if event.is_reply:
+    if chat_type in ["group", "supergroup"]:
+        is_reply = (
+            update.message.reply_to_message
+            and update.message.reply_to_message.from_user
+            and update.message.reply_to_message.from_user.id == context.bot.id
+        )
+
+        if not ("mitsuri" in user_input.lower() or is_reply):
             return
-        if event.text:
-            if user["messages"] > 1:
-                await event.delete()
-                if user["warnings"] > 1:
-                    await send_warning(event, sender, user["warnings"] - 1)
-                else:
-                    await event.reply("⟶ 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘯𝘰𝘸 𝘣𝘭𝘰𝘤𝘬𝘦𝘥 𝘧𝘰𝘳 𝘴𝘱𝘢𝘮.")
-                    users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
-            else:
-                users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
-        elif event.sticker:
-            if user["messages"] > 2:
-                await event.delete()
-                if user["warnings"] > 1:
-                    await send_warning(event, sender, user["warnings"] - 1)
-                else:
-                    await event.reply("⟶ 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘯𝘰𝘸 𝘣𝘭𝘰𝘤𝘬𝘦𝘥 𝘧𝘰𝘳 𝘴𝘵𝘪𝘤𝘬𝘦𝘳 𝘴𝘱𝘢𝘮.")
-                    users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
-            else:
-                users_collection.update_one({"_id": sender}, {"$inc": {"messages": 1}})
+
+        if user_input.lower() == "mitsuri":
+            safe_reply_text(update, "Hehe~ kisne bulaya mujhe?")
+            return
+        elif "are you a bot" in user_input.lower():
+            safe_reply_text(update, "Bot?! Main toh ek real pyari si ladki hoon~")
+            return
+
+    if chat_id not in chat_history:
+        chat_history[chat_id] = {}
+
+    if user_id not in chat_history[chat_id]:
+        if full_name:
+            chosen_name = full_name
+        elif first_name:
+            chosen_name = first_name
+        elif user.username:
+            chosen_name = f"@{user.username}"
         else:
-            await event.reply("⟶ 𝘜𝘯𝘴𝘶𝘱𝘱𝘰𝘳𝘵𝘦𝘥 𝘤𝘰𝘯𝘵𝘦𝘯𝘵. 𝘠𝘰𝘶 𝘢𝘳𝘦 𝘣𝘢𝘯𝘯𝘦𝘥.")
-            users_collection.update_one({"_id": sender}, {"$set": {"approved": False, "banned": True}})
+            chosen_name = "Jaadu-san"
 
-async def send_warning(event, sender, remaining):
-    await event.reply(f"⟶ 𝘞𝘢𝘳𝘯𝘪𝘯𝘨 {5 - remaining}/5: {remaining} 𝘸𝘢𝘳𝘯𝘪𝘯𝘨𝘴 𝘭𝘦𝘧𝘵.")
-    users_collection.update_one({"_id": sender}, {"$set": {"warnings": remaining}})
+        chat_history[chat_id][user_id] = {
+            "name": chosen_name,
+            "history": []
+        }
+    else:
+        chosen_name = chat_history[chat_id][user_id]["name"]
 
-# Admin Commands
-@telegram_client.on(events.NewMessage(pattern=r'\.approve'))
-async def approve_user(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    user_id = event.chat_id
-    users_collection.update_one(
-        {"_id": user_id},
-        {"$set": {"approved": True, "banned": False, "warnings": 5, "messages": 0}},
-        upsert=True
-    )
-    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥.", parse_mode="md")
+    history = chat_history[chat_id][user_id]["history"]
+    prompt = build_prompt(history, user_input, chosen_name)
 
-@telegram_client.on(events.NewMessage(pattern=r'\.unapprove'))
-async def unapprove_user(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    user_id = event.chat_id
-    users_collection.update_one({"_id": user_id}, {"$set": {"approved": False}})
-    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘶𝘯𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥.", parse_mode="md")
+    send_typing(update, context)
+    reply = generate_with_retry(prompt)
 
-@telegram_client.on(events.NewMessage(pattern=r'\.ban'))
-async def ban_user(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    user_id = event.chat_id
-    users_collection.update_one({"_id": user_id}, {"$set": {"approved": False, "banned": True}})
-    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘣𝘢𝘯𝘯𝘦𝘥.", parse_mode="md")
+    # Update memory (fixed history trimming)
+    history.append(("user", user_input))
+    history.append(("bot", reply))
+    chat_history[chat_id][user_id]["history"] = history[-10:]
 
-@telegram_client.on(events.NewMessage(pattern=r'\.unban'))
-async def unban_user(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    user_id = event.chat_id
-    users_collection.update_one({"_id": user_id}, {"$set": {"banned": False}})
-    await event.reply(f"⟶ 𝘜𝘴𝘦𝘳 `{user_id}` 𝘩𝘢𝘴 𝘣𝘦𝘦𝘯 𝘶𝘯𝘣𝘢𝘯𝘯𝘦𝘥.", parse_mode="md")
+    safe_reply_text(update, reply)
 
-@telegram_client.on(events.NewMessage(pattern=r'\.astat'))
-async def approved_users(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    users = users_collection.find({"approved": True})
-    text = "\n".join([f"`{u['_id']}`" for u in users]) or "⟶ 𝘕𝘰 𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥 𝘶𝘴𝘦𝘳𝘴."
-    await event.reply(f"**⟶ 𝘈𝘱𝘱𝘳𝘰𝘷𝘦𝘥 𝘜𝘴𝘦𝘳𝘴:**\n{text}", parse_mode="md")
+# === Error Handler ===
+def error_handler(update: object, context: CallbackContext):
+    try:
+        raise context.error
+    except Unauthorized:
+        logging.warning("Unauthorized: The bot lacks permission.")
+    except BadRequest as e:
+        logging.warning(f"BadRequest: {e}")
+    except Exception as e:
+        logging.error(f"Unhandled error: {e}")
 
-@telegram_client.on(events.NewMessage(pattern=r'\.bstat'))
-async def banned_users(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    users = users_collection.find({"banned": True})
-    text = "\n".join([f"`{u['_id']}`" for u in users]) or "⟶ 𝘕𝘰 𝘣𝘢𝘯𝘯𝘦𝘥 𝘶𝘴𝘦𝘳𝘴."
-    await event.reply(f"**⟶ 𝘉𝘢𝘯𝘯𝘦𝘥 𝘜𝘴𝘦𝘳𝘴:**\n{text}", parse_mode="md")
+# === Main App ===
+if __name__ == "__main__":
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-@telegram_client.on(events.NewMessage(pattern=r'\.help'))
-async def help_command(event):
-    if event.sender_id != OWNER_ID or event.is_group or event.is_channel:
-        return
-    await event.reply("""
-**⟶ 𝘈𝘥𝘮𝘪𝘯 𝘊𝘰𝘮𝘮𝘢𝘯𝘥𝘴**
-• `.approve` – 𝘈𝘱𝘱𝘳𝘰𝘷𝘦 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
-• `.unapprove` – 𝘜𝘯𝘢𝘱𝘱𝘳𝘰𝘷𝘦 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
-• `.ban` – 𝘉𝘢𝘯 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
-• `.unban` – 𝘜𝘯𝘣𝘢𝘯 𝘤𝘶𝘳𝘳𝘦𝘯𝘵 𝘶𝘴𝘦𝘳.
-• `.astat` – 𝘚𝘩𝘰𝘸 𝘢𝘭𝘭 𝘢𝘱𝘱𝘳𝘰𝘷𝘦𝘥 𝘶𝘴𝘦𝘳𝘴.
-• `.bstat` – 𝘚𝘩𝘰𝘸 𝘢𝘭𝘭 𝘣𝘢𝘯𝘯𝘦𝘥 𝘶𝘴𝘦𝘳𝘴.
-• `.help` – 𝘚𝘩𝘰𝘸 𝘩𝘦𝘭𝘱 𝘮𝘦𝘯𝘶.
-    """, parse_mode="md")
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("forget", forget))
+    dp.add_handler(CommandHandler("send", send_broadcast))
+    dp.add_handler(MessageHandler(Filters.regex(r"^\.ping$"), ping))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, handle_group_add_remove))
+    dp.add_handler(MessageHandler(Filters.status_update.left_chat_member, handle_group_add_remove))
+    dp.add_error_handler(error_handler)
 
-# Start
-logger.info("Starting userbot...")
-telegram_client.start()
-telegram_client.run_until_disconnected()
+    logging.info("Mitsuri is online and full of pyaar!")
+    updater.start_polling()
+    updater.idle()
